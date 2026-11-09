@@ -1,5 +1,5 @@
 /**
- * dsh-bookmarks — host half.
+ * caopazi-marks — host half.
  *
  * The feature is entirely client-side: it reads the conversation DOM anchors
  * (`data-chat-flow-key` / `data-chat-turn`), the `turnOutline` projection for a
