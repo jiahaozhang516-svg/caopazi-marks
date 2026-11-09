@@ -70,8 +70,8 @@ window.__ModuleLoader__.load({
 			".dshbm-pick:hover{background:var(--dsw-alias-button-floating-hover,var(--dsw-alias-interactive-bg-hover,rgba(0,0,0,.06)))}",
 			".dshbm-pick:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}",
 			"@keyframes dshbm-in{from{opacity:0;transform:translateX(-50%) translateY(6px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}",
-			".dshbm-marks{position:fixed;inset:0;pointer-events:none;z-index:2147482998;opacity:0;transition:opacity .16s ease}",
-			".dshbm-mark-line{position:absolute;background:rgba(255,193,7,.38);border-radius:3px;box-shadow:0 0 0 1px rgba(255,171,0,.3)}",
+			".dshbm-marks{position:fixed;inset:0;pointer-events:none;z-index:2147482998}",
+			".dshbm-mark-line{position:fixed;background:rgba(64,120,255,.3);border-radius:3px;box-shadow:0 0 0 1px rgba(64,120,255,.32);opacity:1;transition:opacity .25s ease}",
 			".dshbm-spark{position:fixed;z-index:2147482999;pointer-events:none;border-radius:12px;border:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);box-shadow:0 0 0 5px rgba(77,107,254,.14);opacity:0;transition:opacity .2s ease;box-sizing:border-box}",
 			".dshbm-toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 96px);transform:translate(-50%,6px);z-index:2147483003;padding:7px 13px;border-radius:999px;background:rgba(20,22,26,.92);color:#fff;font-size:12.5px;line-height:1.4;opacity:0;transition:opacity .18s ease,transform .18s ease;pointer-events:none;max-width:80vw}",
 			"body.dshbm-arming [data-chat-flow-key]{cursor:crosshair}",
@@ -80,11 +80,14 @@ window.__ModuleLoader__.load({
 
 		function ensureStyle() {
 			try {
-				if (document.querySelector("style[data-dsh-bookmarks]") !== null) return;
-				const tag = document.createElement("style");
-				tag.setAttribute("data-dsh-bookmarks", "");
-				tag.textContent = CSS;
-				document.head.appendChild(tag);
+				let tag = document.querySelector("style[data-dsh-bookmarks]");
+				if (tag === null) {
+					tag = document.createElement("style");
+					tag.setAttribute("data-dsh-bookmarks", "");
+					document.head.appendChild(tag);
+				}
+				// Keep the sheet in step with this module: a hot reload reuses the tag.
+				if (tag.textContent !== CSS) tag.textContent = CSS;
 			} catch (error) {
 				console.error("dsh-bookmarks: stylesheet failed", error);
 			}
@@ -353,37 +356,36 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		 * Paint the matched text with plain fixed-position rectangles over its client rects.
+		 * Paint a matched range with fixed-position rectangles over its client rects.
 		 * The CSS Custom Highlight API is not available in every WebView, so this overlay is
 		 * the reliable path: it never touches React-owned nodes.
 		 */
-		function paintTextRange(root, text) {
-			const needle = matchNeedle(text);
-			if (needle.length < 2) return false;
-			const range = rangeForText(root, needle);
-			if (range === null) return false;
+		function paintRange(range) {
 			let rects = [];
 			try {
 				rects = Array.from(range.getClientRects());
 			} catch (error) {
 				rects = [];
 			}
-			rects = rects.filter((rect) => rect.width > 1 && rect.height > 1);
+			// Never clamp an off-screen line to the top edge: drop it instead.
+			rects = rects.filter(
+				(rect) => rect.width > 1 && rect.height > 1 && rect.bottom > 0 && rect.top < window.innerHeight,
+			);
 			if (rects.length === 0) return false;
 			const layer = document.createElement("div");
 			layer.className = "dshbm-marks";
 			for (const rect of rects) {
 				const line = document.createElement("div");
 				line.className = "dshbm-mark-line";
-				line.style.left = Math.max(0, rect.left - 2) + "px";
-				line.style.top = Math.max(0, rect.top - 1) + "px";
+				line.style.left = rect.left - 2 + "px";
+				line.style.top = rect.top - 1 + "px";
 				line.style.width = Math.max(2, rect.width + 4) + "px";
 				line.style.height = Math.max(2, rect.height + 2) + "px";
 				layer.appendChild(line);
 			}
 			document.body.appendChild(layer);
 			requestAnimationFrame(() => {
-				layer.style.opacity = "1";
+				for (const line of layer.children) line.style.opacity = "1";
 			});
 			let dropped = false;
 			const drop = () => {
@@ -394,9 +396,50 @@ window.__ModuleLoader__.load({
 			};
 			window.addEventListener("scroll", drop, true);
 			setTimeout(() => {
-				layer.style.opacity = "0";
-			}, 3800);
-			setTimeout(drop, 4200);
+				for (const line of layer.children) line.style.opacity = "0";
+			}, 3600);
+			setTimeout(drop, 4000);
+			return true;
+		}
+
+		/** Nearest scrollable ancestor of a text node, so the exact line can be centered. */
+		function scrollableAncestor(node) {
+			let element = node && node.nodeType === 3 ? node.parentElement : node;
+			while (element !== null && element !== document.body && element !== document.documentElement) {
+				let style = null;
+				try {
+					style = window.getComputedStyle(element);
+				} catch (error) {
+					style = null;
+				}
+				if (
+					style !== null &&
+					/(auto|scroll)/.test(style.overflowY) &&
+					element.scrollHeight > element.clientHeight + 4
+				)
+					return element;
+				element = element.parentElement;
+			}
+			return null;
+		}
+
+		/** Scroll the matched line itself to the middle; block centering cannot do this for tall rows. */
+		function centerRange(range, scroller) {
+			let rect = null;
+			try {
+				rect = range.getBoundingClientRect();
+			} catch (error) {
+				rect = null;
+			}
+			if (rect === null || (rect.width === 0 && rect.height === 0)) return false;
+			const box = scroller.getBoundingClientRect();
+			const delta = rect.top + rect.height / 2 - (box.top + box.height / 2);
+			if (Math.abs(delta) < 12) return true;
+			try {
+				scroller.scrollTo({ top: scroller.scrollTop + delta, behavior: "smooth" });
+			} catch (error) {
+				scroller.scrollTop += delta;
+			}
 			return true;
 		}
 
@@ -453,19 +496,30 @@ window.__ModuleLoader__.load({
 		}
 
 		function land(bookmark, row) {
-			try {
-				row.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
-			} catch (error) {
+			const wantsText = bookmark.scope !== "message" && !!bookmark.text;
+			let range = null;
+			if (wantsText) {
+				const needle = matchNeedle(bookmark.text);
+				if (needle.length >= 2) range = rangeForText(row, needle);
+			}
+			let scrolled = false;
+			if (range !== null) {
+				const scroller = scrollableAncestor(range.startContainer);
+				if (scroller !== null) scrolled = centerRange(range, scroller);
+			}
+			if (!scrolled) {
 				try {
-					row.scrollIntoView();
-				} catch (_) {
-					/* ignore */
+					row.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+				} catch (error) {
+					try {
+						row.scrollIntoView();
+					} catch (_) {
+						/* ignore */
+					}
 				}
 			}
 			settleRow(row, () => {
-				const wantsText = bookmark.scope !== "message" && !!bookmark.text;
-				const painted = wantsText ? paintTextRange(row, bookmark.text) : false;
-				if (!painted) spark(row);
+				if (range === null || !paintRange(range)) spark(row);
 			});
 		}
 
