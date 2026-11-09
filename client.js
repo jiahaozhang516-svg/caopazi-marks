@@ -1,5 +1,5 @@
 /**
- * dsh-bookmarks — client half.
+ * caopazi-marks — client half.
  *
  * Marks a passage of the conversation (text selection) or a whole message, then
  * jumps back to it later. All state is local to this browser profile.
@@ -13,7 +13,7 @@
  * No host half, route, or session projection is added.
  */
 window.__ModuleLoader__.load({
-	id: "dsh-bookmarks",
+	id: "caopazi-marks",
 	factory: (require) => {
 		const React = require("react");
 		const ReactDOM = require("react-dom");
@@ -72,7 +72,8 @@ window.__ModuleLoader__.load({
 			"@keyframes dshbm-in{from{opacity:0;transform:translateX(-50%) translateY(6px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}",
 			".dshbm-marks{position:fixed;inset:0;pointer-events:none;z-index:2147482998}",
 			".dshbm-mark-line{position:fixed;background:rgba(64,120,255,.3);border-radius:3px;box-shadow:0 0 0 1px rgba(64,120,255,.32);opacity:1;transition:opacity .25s ease}",
-			".dshbm-spark{position:fixed;z-index:2147482999;pointer-events:none;border-radius:12px;border:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);box-shadow:0 0 0 5px rgba(77,107,254,.14);opacity:0;transition:opacity .2s ease;box-sizing:border-box}",
+			".dshbm-spark{position:fixed;z-index:2147482999;pointer-events:none;border-radius:12px;border:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);box-shadow:0 0 0 5px rgba(77,107,254,.14);box-sizing:border-box;opacity:0;animation:dshbm-spark 1.7s ease-out forwards}",
+			"@keyframes dshbm-spark{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}",
 			".dshbm-toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 96px);transform:translate(-50%,6px);z-index:2147483003;padding:7px 13px;border-radius:999px;background:rgba(20,22,26,.92);color:#fff;font-size:12.5px;line-height:1.4;opacity:0;transition:opacity .18s ease,transform .18s ease;pointer-events:none;max-width:80vw}",
 			"body.dshbm-arming [data-chat-flow-key]{cursor:crosshair}",
 			"body.dshbm-arming [data-chat-flow-key]:hover{box-shadow:inset 0 0 0 1px var(--dsw-alias-state-business-primary,#4d6bfe);border-radius:8px}",
@@ -80,16 +81,16 @@ window.__ModuleLoader__.load({
 
 		function ensureStyle() {
 			try {
-				let tag = document.querySelector("style[data-dsh-bookmarks]");
+				let tag = document.querySelector("style[data-caopazi-marks]");
 				if (tag === null) {
 					tag = document.createElement("style");
-					tag.setAttribute("data-dsh-bookmarks", "");
+					tag.setAttribute("data-caopazi-marks", "");
 					document.head.appendChild(tag);
 				}
 				// Keep the sheet in step with this module: a hot reload reuses the tag.
 				if (tag.textContent !== CSS) tag.textContent = CSS;
 			} catch (error) {
-				console.error("dsh-bookmarks: stylesheet failed", error);
+				console.error("caopazi-marks: stylesheet failed", error);
 			}
 		}
 
@@ -116,7 +117,7 @@ window.__ModuleLoader__.load({
 				if (!Array.isArray(parsed)) return [];
 				return parsed.filter(validBookmark).slice(0, MAX_BOOKMARKS);
 			} catch (error) {
-				console.error("dsh-bookmarks: stored state unreadable", error);
+				console.error("caopazi-marks: stored state unreadable", error);
 				return [];
 			}
 		}
@@ -133,7 +134,7 @@ window.__ModuleLoader__.load({
 			try {
 				window.localStorage.setItem(STORAGE_KEY, JSON.stringify(bookmarks));
 			} catch (error) {
-				console.error("dsh-bookmarks: could not persist", error);
+				console.error("caopazi-marks: could not persist", error);
 			}
 		}
 
@@ -144,7 +145,7 @@ window.__ModuleLoader__.load({
 				try {
 					listener();
 				} catch (error) {
-					console.error("dsh-bookmarks: listener failed", error);
+					console.error("caopazi-marks: listener failed", error);
 				}
 			}
 		}
@@ -178,16 +179,27 @@ window.__ModuleLoader__.load({
 					toastEl = document.createElement("div");
 					toastEl.className = "dshbm-toast";
 				}
+				const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+				let bottom = 140;
+				try {
+					const seat = document.querySelector("[data-composer-seat]");
+					if (seat !== null) {
+						const rect = seat.getBoundingClientRect();
+						if (rect.height > 0 && rect.top > viewportHeight * 0.45)
+							bottom = Math.max(24, viewportHeight - rect.top + 14);
+					}
+				} catch (error) {
+					/* keep the default offset */
+				}
+				toastEl.style.bottom = bottom + "px";
 				toastEl.textContent = message;
 				if (!toastEl.isConnected) document.body.appendChild(toastEl);
-				requestAnimationFrame(() => {
-					toastEl.style.opacity = "1";
-					toastEl.style.transform = "translate(-50%,0)";
-				});
+				toastEl.style.opacity = "1";
+				toastEl.style.transform = "translate(-50%,0)";
 				if (toastTimer !== null) clearTimeout(toastTimer);
 				toastTimer = setTimeout(() => {
 					if (toastEl !== null) toastEl.style.opacity = "0";
-				}, 1900);
+				}, 2100);
 			} catch (_) {
 				/* a toast must never break the interaction */
 			}
@@ -355,6 +367,12 @@ window.__ModuleLoader__.load({
 			return base.slice(0, 90);
 		}
 
+		/** Remove any overlay from a previous jump so two highlights never stack. */
+		function clearMarks() {
+			const layers = document.querySelectorAll(".dshbm-marks");
+			for (const layer of layers) layer.remove();
+		}
+
 		/**
 		 * Paint a matched range with fixed-position rectangles over its client rects.
 		 * The CSS Custom Highlight API is not available in every WebView, so this overlay is
@@ -367,11 +385,13 @@ window.__ModuleLoader__.load({
 			} catch (error) {
 				rects = [];
 			}
+			const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
 			// Never clamp an off-screen line to the top edge: drop it instead.
 			rects = rects.filter(
-				(rect) => rect.width > 1 && rect.height > 1 && rect.bottom > 0 && rect.top < window.innerHeight,
+				(rect) => rect.width > 1 && rect.height > 1 && rect.bottom > -8 && rect.top < viewportHeight + 8,
 			);
 			if (rects.length === 0) return false;
+			clearMarks();
 			const layer = document.createElement("div");
 			layer.className = "dshbm-marks";
 			for (const rect of rects) {
@@ -384,17 +404,17 @@ window.__ModuleLoader__.load({
 				layer.appendChild(line);
 			}
 			document.body.appendChild(layer);
-			requestAnimationFrame(() => {
-				for (const line of layer.children) line.style.opacity = "1";
-			});
+			// Only user gestures dismiss the marks; a programmatic scroll event must not.
 			let dropped = false;
 			const drop = () => {
 				if (dropped) return;
 				dropped = true;
-				window.removeEventListener("scroll", drop, true);
+				window.removeEventListener("touchmove", drop, true);
+				window.removeEventListener("wheel", drop, true);
 				layer.remove();
 			};
-			window.addEventListener("scroll", drop, true);
+			window.addEventListener("touchmove", drop, true);
+			window.addEventListener("wheel", drop, true);
 			setTimeout(() => {
 				for (const line of layer.children) line.style.opacity = "0";
 			}, 3600);
@@ -423,104 +443,109 @@ window.__ModuleLoader__.load({
 			return null;
 		}
 
-		/** Scroll the matched line itself to the middle; block centering cannot do this for tall rows. */
-		function centerRange(range, scroller) {
-			let rect = null;
+		function safeRangeRect(range) {
 			try {
-				rect = range.getBoundingClientRect();
+				return range.getBoundingClientRect();
 			} catch (error) {
-				rect = null;
+				return null;
 			}
-			if (rect === null || (rect.width === 0 && rect.height === 0)) return false;
-			const box = scroller.getBoundingClientRect();
-			const delta = rect.top + rect.height / 2 - (box.top + box.height / 2);
-			if (Math.abs(delta) < 12) return true;
+		}
+
+		/**
+		 * Center the matched line with instant scrollTop math. Instant (not smooth) so the
+		 * highlight is painted against final layout and no animation can race it.
+		 */
+		function scrollRangeIntoCenter(range) {
+			const node = range.startContainer;
+			const element = node && node.nodeType === 3 ? node.parentElement : node;
+			if (!element) return false;
+			const scroller = scrollableAncestor(element);
+			if (scroller !== null) {
+				for (let pass = 0; pass < 3; pass += 1) {
+					const rect = safeRangeRect(range);
+					if (rect === null || (rect.width === 0 && rect.height === 0)) break;
+					const box = scroller.getBoundingClientRect();
+					const delta = rect.top + rect.height / 2 - (box.top + box.height / 2);
+					if (Math.abs(delta) < 6) break;
+					const before = scroller.scrollTop;
+					scroller.scrollTop = before + delta;
+					if (Math.abs(scroller.scrollTop - before) < 1) break;
+				}
+			}
+			// Verify the landing; otherwise let the browser scroll every ancestor.
+			const rect = safeRangeRect(range);
+			const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+			if (rect !== null && rect.height > 0 && rect.top >= -4 && rect.bottom <= viewportHeight + 4) return true;
 			try {
-				scroller.scrollTo({ top: scroller.scrollTop + delta, behavior: "smooth" });
+				element.scrollIntoView({ block: "center" });
 			} catch (error) {
-				scroller.scrollTop += delta;
+				return false;
 			}
 			return true;
 		}
 
-		/** Wait until a smooth scroll settles, so fixed overlays line up with the text. */
-		function settleRow(row, callback) {
-			const started = Date.now();
-			let previous = "";
-			let stable = 0;
-			const tick = () => {
-				let key;
-				try {
-					const rect = row.getBoundingClientRect();
-					key = Math.round(rect.top) + ":" + Math.round(rect.height);
-				} catch (error) {
-					key = "gone";
-				}
-				if (key === previous) stable += 1;
-				else {
-					stable = 0;
-					previous = key;
-				}
-				if (stable >= 2 || Date.now() - started > 1600) {
-					callback();
-					return;
-				}
-				requestAnimationFrame(tick);
-			};
-			requestAnimationFrame(tick);
-		}
-
 		function spark(row) {
 			try {
+				const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+				const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 800;
 				const rect = row.getBoundingClientRect();
-				if (rect.height === 0 || rect.bottom < 0 || rect.top > window.innerHeight) return;
+				if (rect.height === 0 || rect.bottom < 0 || rect.top > viewportHeight) return;
 				const box = document.createElement("div");
 				box.className = "dshbm-spark";
 				box.style.left = Math.max(4, rect.left - 6) + "px";
 				box.style.top = Math.max(4, rect.top - 6) + "px";
-				box.style.width = Math.min(window.innerWidth - 8, rect.width + 12) + "px";
+				box.style.width = Math.min(viewportWidth - 8, rect.width + 12) + "px";
 				box.style.height = Math.max(28, rect.height + 12) + "px";
 				document.body.appendChild(box);
-				requestAnimationFrame(() => {
-					box.style.opacity = "1";
-				});
-				setTimeout(() => {
-					box.style.opacity = "0";
-				}, 1500);
 				setTimeout(() => {
 					box.remove();
-				}, 1900);
+				}, 1800);
 			} catch (error) {
 				/* decorative */
 			}
 		}
 
 		function land(bookmark, row) {
-			const wantsText = bookmark.scope !== "message" && !!bookmark.text;
-			let range = null;
-			if (wantsText) {
-				const needle = matchNeedle(bookmark.text);
-				if (needle.length >= 2) range = rangeForText(row, needle);
-			}
-			let scrolled = false;
-			if (range !== null) {
-				const scroller = scrollableAncestor(range.startContainer);
-				if (scroller !== null) scrolled = centerRange(range, scroller);
-			}
-			if (!scrolled) {
-				try {
-					row.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
-				} catch (error) {
+			try {
+				const wantsText = bookmark.scope !== "message" && !!bookmark.text;
+				let range = null;
+				if (wantsText) {
+					const needle = matchNeedle(bookmark.text);
+					if (needle.length >= 2) range = rangeForText(row, needle);
+				}
+				let centered = false;
+				if (range !== null) centered = scrollRangeIntoCenter(range);
+				if (!centered) {
 					try {
-						row.scrollIntoView();
-					} catch (_) {
-						/* ignore */
+						row.scrollIntoView({ block: "center", inline: "nearest" });
+					} catch (error) {
+						try {
+							row.scrollIntoView();
+						} catch (_) {
+							/* ignore */
+						}
 					}
 				}
+				// Instant scroll means layout is already final: paint synchronously, then
+				// repaint once after the chat's own paging anchor settles.
+				if (range === null || !paintRange(range)) {
+					spark(row);
+					if (wantsText && range === null) toast("没匹配到原文，先定位到整条消息");
+				}
+				if (range !== null) {
+					setTimeout(() => {
+						paintRange(range);
+					}, 240);
+				}
+			} catch (error) {
+				console.error("caopazi-marks: land failed", error);
+				try {
+					row.scrollIntoView({ block: "center" });
+				} catch (_) {
+					/* ignore */
+				}
+				spark(row);
 			}
-			settleRow(row, () => {
-				if (range === null || !paintRange(range)) spark(row);
-			});
 		}
 
 		/* ─────────────────────────────── jumping ─────────────────────────────── */
@@ -585,19 +610,27 @@ window.__ModuleLoader__.load({
 		}
 
 		async function jumpTo(bookmark) {
-			if (!bookmark || !bookmark.sessionId) return false;
-			const workspace = ctxRef && ctxRef.get("uiWorkspace");
-			if (bookmark.sessionId !== liveSessionId) {
-				if (!workspace || typeof workspace.openSession !== "function") {
-					toast("打不开对应会话");
-					return false;
+			try {
+				if (!bookmark || !bookmark.sessionId) return false;
+				const workspace = ctxRef && ctxRef.get("uiWorkspace");
+				if (bookmark.sessionId !== liveSessionId) {
+					if (!workspace || typeof workspace.openSession !== "function") {
+						toast("打不开对应会话");
+						return false;
+					}
+					workspace.openSession(bookmark.sessionId);
+					await wait(400);
 				}
-				workspace.openSession(bookmark.sessionId);
-				await wait(400);
+				const slow = setTimeout(() => toast("正在定位…"), 400);
+				const ok = await locate(bookmark);
+				clearTimeout(slow);
+				if (!ok) toast("没找到这条书签，可能已不在当前加载的历史里");
+				return ok;
+			} catch (error) {
+				console.error("caopazi-marks: jump failed", error);
+				toast("定位失败，请再试一次");
+				return false;
 			}
-			const ok = await locate(bookmark);
-			if (!ok) toast("没找到这条书签，可能已不在当前加载的历史里");
-			return ok;
 		}
 
 		/* ─────────────────────────────── writing ─────────────────────────────── */
@@ -648,7 +681,7 @@ window.__ModuleLoader__.load({
 				commit([bookmark].concat(bookmarks).slice(0, MAX_BOOKMARKS));
 				toast("已加入书签");
 			} catch (error) {
-				console.error("dsh-bookmarks: add failed", error);
+				console.error("caopazi-marks: add failed", error);
 			}
 		}
 
@@ -1126,16 +1159,16 @@ window.__ModuleLoader__.load({
 			ctxRef = ctx;
 			ensureStyle();
 			try {
-				ctx.effect(() => installSelectionChip(), "dsh-bookmarks: selection chip");
+				ctx.effect(() => installSelectionChip(), "caopazi-marks: selection chip");
 			} catch (error) {
-				console.error("dsh-bookmarks: selection chip failed", error);
+				console.error("caopazi-marks: selection chip failed", error);
 			}
 			try {
 				ctx.slots.inject("conversation.input.left", () =>
 					ctx.slots.register(
 						{
 							name: "conversation.input.left",
-							id: "dsh-bookmarks",
+							id: "caopazi-marks",
 							order: 40,
 							inject: (sessionId) => ({ sessionId }),
 						},
@@ -1143,12 +1176,12 @@ window.__ModuleLoader__.load({
 					),
 				);
 			} catch (error) {
-				console.error("dsh-bookmarks: toolbar registration failed", error);
+				console.error("caopazi-marks: toolbar registration failed", error);
 			}
 		}
 
 		return {
-			name: "dsh-bookmarks",
+			name: "caopazi-marks",
 			inject: ["slots", "sessions"],
 			apply,
 		};
