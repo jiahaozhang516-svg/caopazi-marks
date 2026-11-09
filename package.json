@@ -1,0 +1,29 @@
+{
+  "name": "dsh-bookmarks",
+  "version": "1.1.0",
+  "private": true,
+  "description": "会话书签：划选一段对话或整条消息打书签，之后一键定位回去。",
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-chat"
+      ]
+    }
+  },
+  "license": "MIT"
+}
