@@ -29,6 +29,8 @@ window.__ModuleLoader__.load({
 		let ctxRef = null;
 		/** Session whose composer currently owns the toolbar button. */
 		let liveSessionId = null;
+		/** Monotonic jump identity: a newer jump cancels every older scroll/paint callback. */
+		let jumpToken = 0;
 
 		/* ────────────────────────────── styles ────────────────────────────── */
 
@@ -71,7 +73,8 @@ window.__ModuleLoader__.load({
 			".dshbm-pick:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);outline-offset:2px}",
 			"@keyframes dshbm-in{from{opacity:0;transform:translateX(-50%) translateY(6px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}",
 			".dshbm-marks{position:fixed;inset:0;pointer-events:none;z-index:2147482998}",
-			".dshbm-mark-line{position:fixed;background:rgba(64,120,255,.3);border-radius:3px;box-shadow:0 0 0 1px rgba(64,120,255,.32);opacity:1;transition:opacity .25s ease}",
+			".dshbm-mark-line{position:fixed;background:rgba(64,120,255,.3);border-radius:3px;box-shadow:0 0 0 1px rgba(64,120,255,.32);opacity:1;transition:opacity .28s ease;animation:dshbm-mark-in .24s ease-out}",
+			"@keyframes dshbm-mark-in{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}",
 			".dshbm-spark{position:fixed;z-index:2147482999;pointer-events:none;border-radius:12px;border:2px solid var(--dsw-alias-state-business-primary,#4d6bfe);box-shadow:0 0 0 5px rgba(77,107,254,.14);box-sizing:border-box;opacity:0;animation:dshbm-spark 1.7s ease-out forwards}",
 			"@keyframes dshbm-spark{0%{opacity:0}12%{opacity:1}70%{opacity:1}100%{opacity:0}}",
 			".dshbm-toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 96px);transform:translate(-50%,6px);z-index:2147483003;padding:7px 13px;border-radius:999px;background:rgba(20,22,26,.92);color:#fff;font-size:12.5px;line-height:1.4;opacity:0;transition:opacity .18s ease,transform .18s ease;pointer-events:none;max-width:80vw}",
@@ -373,6 +376,12 @@ window.__ModuleLoader__.load({
 			for (const layer of layers) layer.remove();
 		}
 
+		/** Remove any whole-message ring left by a previous jump. */
+		function clearSparks() {
+			const boxes = document.querySelectorAll(".dshbm-spark");
+			for (const box of boxes) box.remove();
+		}
+
 		/**
 		 * Paint a matched range with fixed-position rectangles over its client rects.
 		 * The CSS Custom Highlight API is not available in every WebView, so this overlay is
@@ -484,6 +493,62 @@ window.__ModuleLoader__.load({
 			return true;
 		}
 
+		/** Where the matched line should sit: the scroller plus the scrollTop that centers it. */
+		function scrollTargetFor(range) {
+			const node = range.startContainer;
+			const element = node && node.nodeType === 3 ? node.parentElement : node;
+			if (!element) return null;
+			const rect = safeRangeRect(range);
+			if (rect === null) return null;
+			const scroller = scrollableAncestor(element);
+			if (scroller === null) return { element };
+			const box = scroller.getBoundingClientRect();
+			const delta = rect.top + rect.height / 2 - (box.top + box.height / 2);
+			return { scroller, target: scroller.scrollTop + delta };
+		}
+
+		/**
+		 * Ease-out scroll driven by setTimeout. The first instant pixel step happens before any
+		 * scroll event is delivered, which makes the movement reader-attributed — otherwise a
+		 * conversation pinned to the tail snaps back to the bottom on that first event and the
+		 * whole glide is lost.
+		 */
+		function animateScrollTo(scroller, target, token, done) {
+			const startTop = scroller.scrollTop;
+			const maxTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+			const goal = Math.max(0, Math.min(target, maxTop));
+			const distance = goal - startTop;
+			if (Math.abs(distance) < 1) {
+				done();
+				return;
+			}
+			const nudge = Math.sign(distance) * Math.min(4, Math.abs(distance));
+			scroller.scrollTop = startTop + nudge;
+			const duration = Math.max(260, Math.min(520, 260 + Math.abs(distance) / 12));
+			const started = Date.now();
+			const step = () => {
+				if (token !== jumpToken) return;
+				const t = Math.min(1, (Date.now() - started) / duration);
+				const eased = 1 - Math.pow(1 - t, 3);
+				if (t < 1) {
+					scroller.scrollTop = startTop + nudge + (distance - nudge) * eased;
+					setTimeout(step, 16);
+					return;
+				}
+				scroller.scrollTop = goal;
+				done();
+			};
+			setTimeout(step, 16);
+		}
+
+		/** The safety net: if the target is not fully visible after the animation, snap it into view. */
+		function ensureRangeVisible(range) {
+			const rect = safeRangeRect(range);
+			const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
+			if (rect !== null && rect.height > 0 && rect.top >= -4 && rect.bottom <= viewportHeight + 4) return true;
+			return scrollRangeIntoCenter(range);
+		}
+
 		function spark(row) {
 			try {
 				const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 800;
@@ -505,38 +570,75 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		function land(bookmark, row) {
+		function land(bookmark, row, token) {
+			if (token !== jumpToken) return;
 			try {
+				// Clear the previous jump's overlay the instant this one starts, so a stale
+				// fixed highlight can never hang over the conversation while we glide.
+				clearMarks();
+				clearSparks();
 				const wantsText = bookmark.scope !== "message" && !!bookmark.text;
 				let range = null;
 				if (wantsText) {
 					const needle = matchNeedle(bookmark.text);
 					if (needle.length >= 2) range = rangeForText(row, needle);
 				}
-				let centered = false;
-				if (range !== null) centered = scrollRangeIntoCenter(range);
-				if (!centered) {
+
+				const finish = () => {
+					if (token !== jumpToken) return;
 					try {
-						row.scrollIntoView({ block: "center", inline: "nearest" });
-					} catch (error) {
-						try {
-							row.scrollIntoView();
-						} catch (_) {
-							/* ignore */
+						if (range !== null) {
+							// The glide may have been clamped or interrupted: correct instantly.
+							ensureRangeVisible(range);
+							if (paintRange(range)) {
+								setTimeout(() => {
+									if (token === jumpToken) paintRange(range);
+								}, 260);
+								return;
+							}
 						}
+						spark(row);
+						if (wantsText && range === null) toast("没匹配到原文，先定位到整条消息");
+					} catch (error) {
+						console.error("caopazi-marks: finish failed", error);
+						spark(row);
+					}
+				};
+
+				const motion = range !== null ? scrollTargetFor(range) : null;
+				if (motion !== null && motion.element) {
+					try {
+						motion.element.scrollIntoView({ block: "center", behavior: "smooth" });
+					} catch (error) {
+						motion.element.scrollIntoView({ block: "center" });
+					}
+					setTimeout(finish, 420);
+					return;
+				}
+				if (motion !== null && motion.scroller) {
+					animateScrollTo(motion.scroller, motion.target, token, finish);
+					return;
+				}
+
+				// Whole-message target: glide to the row with the same animation.
+				const scroller = scrollableAncestor(row);
+				if (scroller !== null) {
+					const box = scroller.getBoundingClientRect();
+					const rect = row.getBoundingClientRect();
+					const delta = rect.top + rect.height / 2 - (box.top + box.height / 2);
+					animateScrollTo(scroller, scroller.scrollTop + delta, token, finish);
+					return;
+				}
+				try {
+					row.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+				} catch (error) {
+					try {
+						row.scrollIntoView({ block: "center" });
+					} catch (_) {
+						/* ignore */
 					}
 				}
-				// Instant scroll means layout is already final: paint synchronously, then
-				// repaint once after the chat's own paging anchor settles.
-				if (range === null || !paintRange(range)) {
-					spark(row);
-					if (wantsText && range === null) toast("没匹配到原文，先定位到整条消息");
-				}
-				if (range !== null) {
-					setTimeout(() => {
-						paintRange(range);
-					}, 240);
-				}
+				setTimeout(finish, 420);
 			} catch (error) {
 				console.error("caopazi-marks: land failed", error);
 				try {
@@ -570,27 +672,28 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		async function locate(bookmark) {
+		async function locate(bookmark, token) {
 			const deadline = Date.now() + 20000;
 			let loads = 0;
 			while (Date.now() < deadline) {
+				if (token !== jumpToken) return false;
 				const exact = findRowByKey(bookmark.flowKey);
 				if (exact !== null) {
 					if (rowVisible(exact)) {
-						land(bookmark, exact);
+						land(bookmark, exact, token);
 						return true;
 					}
 					// The target row is mounted but folded away: land on the visible row of its turn.
 					const foldedTurn = visibleTurnRow(bookmark.turn);
 					if (foldedTurn !== null && rowVisible(foldedTurn)) {
-						land(bookmark, foldedTurn);
+						land(bookmark, foldedTurn, token);
 						return true;
 					}
 				}
 				// Give history one real page-in before settling for the turn; then keep trying.
 				const byTurn = visibleTurnRow(bookmark.turn);
 				if (byTurn !== null && loads >= 2) {
-					land(bookmark, byTurn);
+					land(bookmark, byTurn, token);
 					return true;
 				}
 				if (loads < 6) {
@@ -601,7 +704,7 @@ window.__ModuleLoader__.load({
 					continue;
 				}
 				if (byTurn !== null && rowVisible(byTurn)) {
-					land(bookmark, byTurn);
+					land(bookmark, byTurn, token);
 					return true;
 				}
 				await wait(200);
@@ -610,6 +713,10 @@ window.__ModuleLoader__.load({
 		}
 
 		async function jumpTo(bookmark) {
+			const token = ++jumpToken;
+			// The click itself retires the previous highlight, even if paging takes a while.
+			clearMarks();
+			clearSparks();
 			try {
 				if (!bookmark || !bookmark.sessionId) return false;
 				const workspace = ctxRef && ctxRef.get("uiWorkspace");
@@ -621,14 +728,18 @@ window.__ModuleLoader__.load({
 					workspace.openSession(bookmark.sessionId);
 					await wait(400);
 				}
-				const slow = setTimeout(() => toast("正在定位…"), 400);
-				const ok = await locate(bookmark);
+				if (token !== jumpToken) return false;
+				const slow = setTimeout(() => {
+					if (token === jumpToken) toast("正在定位…");
+				}, 400);
+				const ok = await locate(bookmark, token);
 				clearTimeout(slow);
+				if (token !== jumpToken) return false;
 				if (!ok) toast("没找到这条书签，可能已不在当前加载的历史里");
 				return ok;
 			} catch (error) {
 				console.error("caopazi-marks: jump failed", error);
-				toast("定位失败，请再试一次");
+				if (token === jumpToken) toast("定位失败，请再试一次");
 				return false;
 			}
 		}
